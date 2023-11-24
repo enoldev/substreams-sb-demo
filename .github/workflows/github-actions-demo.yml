@@ -1,0 +1,14 @@
+name: GitHub Actions Demo
+run-name: ${{ github.actor }} is testing out GitHub Actions 🚀
+on: [push]
+jobs:
+  Explore-GitHub-Actions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - run: curl -o substreams.tar.gz https://github.com/streamingfast/substreams/releases/download/v1.1.20/substreams_linux_x86_64.tar.gz
+      - run: tar xf substreams.tar.gz
+      - run: ls -l
+      #- run: make protogen
+      #- run: make build
