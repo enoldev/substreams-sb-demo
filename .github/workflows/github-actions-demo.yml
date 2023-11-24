@@ -7,8 +7,12 @@ jobs:
     steps:
       - name: Check out repository code
         uses: actions/checkout@v4
-      - run: curl -o substreams.tar.gz https://github.com/streamingfast/substreams/releases/download/v1.1.20/substreams_linux_x86_64.tar.gz
+      - name: Setup buf
+        uses: bufbuild/buf-setup-action@v1
+      - run: curl -L  https://github.com/streamingfast/substreams/releases/download/v1.1.20/substreams_linux_x86_64.tar.gz > substreams.tar.gz
       - run: tar xf substreams.tar.gz
-      - run: ls -l
-      #- run: make protogen
-      #- run: make build
+      - run: sudo ln substreams /usr/bin
+      - run: rustup target add wasm32-unknown-unknown
+      - run: make protogen
+      - run: make build
+      #- run: substreams pack

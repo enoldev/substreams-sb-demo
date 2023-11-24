@@ -1,27 +1,23 @@
 [package]
-name = "substreams-template"
-version = "0.1.0"
-description = "Substream template demo project"
+name = "demo"
+version = "0.0.1"
 edition = "2021"
-repository = "https://github.com/streamingfast/substreams-template"
-license = "Apache 2.0"
 
 [lib]
 name = "substreams"
 crate-type = ["cdylib"]
 
 [dependencies]
-anyhow = "1"
 ethabi = "17"
-hex-literal = "0.3"
+hex-literal = "0.3.4"
 num-bigint = "0.4"
+num-traits = "0.2.15"
 prost = "0.11"
-# Use latest from https://crates.io/crates/substreams
+prost-types = "0.11"
 substreams = "0.5"
-# Use latest from https://crates.io/crates/substreams-database-change
-substreams-database-change = "1.2"
-# Use latest from https://crates.io/crates/substreams-ethereum
 substreams-ethereum = "0.9"
+substreams-database-change = "1"
+substreams-entity-change = "1"
 
 # Required so that ethabi > ethereum-types build correctly under wasm32-unknown-unknown
 [target.wasm32-unknown-unknown.dependencies]
@@ -30,6 +26,7 @@ getrandom = { version = "0.2", features = ["custom"] }
 [build-dependencies]
 anyhow = "1"
 substreams-ethereum = "0.9"
+regex = "1.8"
 
 [profile.release]
 lto = true

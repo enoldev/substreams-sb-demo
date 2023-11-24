@@ -1,22 +1,25 @@
-ENDPOINT ?= mainnet.eth.streamingfast.io:443
-START_BLOCK ?= 12292922
-STOP_BLOCK ?= +10
+CARGO_VERSION := $(shell cargo version 2>/dev/null)
 
 .PHONY: build
 build:
+ifdef CARGO_VERSION
 	cargo build --target wasm32-unknown-unknown --release
+else
+	@echo "Building substreams target using Docker. To speed up this step, install a Rust development environment."
+	docker run --rm -ti --init -v ${PWD}:/usr/src --workdir /usr/src/ rust:bullseye cargo build --target wasm32-unknown-unknown --release
+endif
 
 .PHONY: run
 run: build
-	substreams run -e $(ENDPOINT) substreams.yaml db_out -s $(START_BLOCK) -t $(STOP_BLOCK)
+	substreams run substreams.yaml map_events $(if $(START_BLOCK),-s $(START_BLOCK)) $(if $(STOP_BLOCK),-t $(STOP_BLOCK))
 
 .PHONY: gui
 gui: build
-	substreams gui -e $(ENDPOINT) substreams.yaml db_out -s $(START_BLOCK) -t $(STOP_BLOCK)
+	substreams gui substreams.yaml map_events $(if $(START_BLOCK),-s $(START_BLOCK)) $(if $(STOP_BLOCK),-t $(STOP_BLOCK))
 
 .PHONY: protogen
 protogen:
-	substreams protogen ./substreams.yaml --exclude-paths="google,sf/substreams/sink/database,sf/substreams/rpc,sf/substreams/v1"
+	substreams protogen ./substreams.yaml --exclude-paths="sf/substreams,google"
 
 .PHONY: pack
 pack: build

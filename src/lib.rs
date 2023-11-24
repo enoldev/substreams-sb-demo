@@ -1,96 +1,211 @@
 mod abi;
 mod pb;
 use hex_literal::hex;
-use pb::eth::erc721::v1 as erc721;
-use substreams::{key, prelude::*};
-use substreams::{log, store::StoreAddInt64, Hex};
+use pb::contract::v1 as contract;
+use substreams::Hex;
 use substreams_database_change::pb::database::DatabaseChanges;
-use substreams_database_change::tables::Tables;
-use substreams_ethereum::pb::sf::ethereum::r#type::v2 as eth;
+use substreams_database_change::tables::Tables as DatabaseChangeTables;
+use substreams_entity_change::pb::entity::EntityChanges;
+use substreams_entity_change::tables::Tables as EntityChangesTables;
+use substreams_ethereum::pb::eth::v2 as eth;
+use substreams_ethereum::Event;
 
-// Bored Ape Club Contract
+#[allow(unused_imports)]
+use num_traits::cast::ToPrimitive;
+use std::str::FromStr;
+use substreams::scalar::BigDecimal;
+
 const TRACKED_CONTRACT: [u8; 20] = hex!("bc4ca0eda7647a8ab7c2061c2e118a18a936f13d");
 
 substreams_ethereum::init!();
 
-/// Extracts transfers events from the contract
 #[substreams::handlers::map]
-fn map_transfers(blk: eth::Block) -> Result<Option<erc721::Transfers>, substreams::errors::Error> {
-    let transfers: Vec<_> = blk
-        .events::<abi::erc721::events::Transfer>(&[&TRACKED_CONTRACT])
-        .map(|(transfer, log)| {
-            substreams::log::info!("NFT Transfer seen");
+fn map_events(blk: eth::Block) -> Result<contract::Events, substreams::errors::Error> {
+    Ok(contract::Events {
+        approvals: blk
+            .receipts()
+            .flat_map(|view| {
+                view.receipt.logs.iter()
+                    .filter(|log| log.address == TRACKED_CONTRACT)
+                    .filter_map(|log| {
+                        if let Some(event) = abi::contract::events::Approval::match_and_decode(log) {
+                            return Some(contract::Approval {
+                                evt_tx_hash: Hex(&view.transaction.hash).to_string(),
+                                evt_index: log.block_index,
+                                evt_block_time: Some(blk.timestamp().to_owned()),
+                                evt_block_number: blk.number,
+                                approved: event.approved,
+                                owner: event.owner,
+                                token_id: event.token_id.to_string(),
+                            });
+                        }
 
-            erc721::Transfer {
-                trx_hash: Hex::encode(&log.receipt.transaction.hash),
-                from: Hex::encode(&transfer.from),
-                to: Hex::encode(&transfer.to),
-                token_id: transfer.token_id.to_u64(),
-                ordinal: log.block_index() as u64,
-            }
-        })
-        .collect();
-    if transfers.len() == 0 {
-        return Ok(None);
-    }
+                        None
+                })
+            })
+            .collect(),
+        approval_for_alls: blk
+            .receipts()
+            .flat_map(|view| {
+                view.receipt.logs.iter()
+                    .filter(|log| log.address == TRACKED_CONTRACT)
+                    .filter_map(|log| {
+                        if let Some(event) = abi::contract::events::ApprovalForAll::match_and_decode(log) {
+                            return Some(contract::ApprovalForAll {
+                                evt_tx_hash: Hex(&view.transaction.hash).to_string(),
+                                evt_index: log.block_index,
+                                evt_block_time: Some(blk.timestamp().to_owned()),
+                                evt_block_number: blk.number,
+                                approved: event.approved,
+                                operator: event.operator,
+                                owner: event.owner,
+                            });
+                        }
 
-    Ok(Some(erc721::Transfers { transfers }))
+                        None
+                })
+            })
+            .collect(),
+        ownership_transferreds: blk
+            .receipts()
+            .flat_map(|view| {
+                view.receipt.logs.iter()
+                    .filter(|log| log.address == TRACKED_CONTRACT)
+                    .filter_map(|log| {
+                        if let Some(event) = abi::contract::events::OwnershipTransferred::match_and_decode(log) {
+                            return Some(contract::OwnershipTransferred {
+                                evt_tx_hash: Hex(&view.transaction.hash).to_string(),
+                                evt_index: log.block_index,
+                                evt_block_time: Some(blk.timestamp().to_owned()),
+                                evt_block_number: blk.number,
+                                new_owner: event.new_owner,
+                                previous_owner: event.previous_owner,
+                            });
+                        }
+
+                        None
+                })
+            })
+            .collect(),
+        transfers: blk
+            .receipts()
+            .flat_map(|view| {
+                view.receipt.logs.iter()
+                    .filter(|log| log.address == TRACKED_CONTRACT)
+                    .filter_map(|log| {
+                        if let Some(event) = abi::contract::events::Transfer::match_and_decode(log) {
+                            return Some(contract::Transfer {
+                                evt_tx_hash: Hex(&view.transaction.hash).to_string(),
+                                evt_index: log.block_index,
+                                evt_block_time: Some(blk.timestamp().to_owned()),
+                                evt_block_number: blk.number,
+                                from: event.from,
+                                to: event.to,
+                                token_id: event.token_id.to_string(),
+                            });
+                        }
+
+                        None
+                })
+            })
+            .collect(),
+    })
 }
 
-const NULL_ADDRESS: &str = "0000000000000000000000000000000000000000";
-
-/// Store the total balance of NFT tokens for the specific TRACKED_CONTRACT by holder
-#[substreams::handlers::store]
-fn store_transfers(transfers: erc721::Transfers, s: StoreAddInt64) {
-    log::info!("NFT holders state builder");
-    for transfer in transfers.transfers {
-        if transfer.from != NULL_ADDRESS {
-            log::info!("Found a transfer out {}", Hex(&transfer.trx_hash));
-            s.add(transfer.ordinal, generate_key(&transfer.from), -1);
-        }
-
-        if transfer.to != NULL_ADDRESS {
-            log::info!("Found a transfer in {}", Hex(&transfer.trx_hash));
-            s.add(transfer.ordinal, generate_key(&transfer.to), 1);
-        }
-    }
-}
-
 #[substreams::handlers::map]
-fn db_out(
-    clock: substreams::pb::substreams::Clock,
-    transfers: erc721::Transfers,
-    owner_deltas: Deltas<DeltaInt64>,
-) -> Result<DatabaseChanges, substreams::errors::Error> {
-    let mut tables = Tables::new();
-    for transfer in transfers.transfers {
-        tables
-            .create_row(
-                "transfer",
-                format!("{}-{}", &transfer.trx_hash, transfer.ordinal),
-            )
-            .set("trx_hash", transfer.trx_hash)
-            .set("from", transfer.from)
-            .set("to", transfer.to)
-            .set("token_id", transfer.token_id)
-            .set("ordinal", transfer.ordinal);
-    }
+fn db_out(events: contract::Events) -> Result<DatabaseChanges, substreams::errors::Error> {
+    // Initialize changes container
+    let mut tables = DatabaseChangeTables::new();
 
-    for delta in owner_deltas.into_iter() {
-        let holder = key::segment_at(&delta.key, 1);
-        let contract = key::segment_at(&delta.key, 2);
-
+    // Loop over all the abis events to create changes
+    events.approvals.into_iter().for_each(|evt| {
         tables
-            .create_row("owner_count", format!("{}-{}", contract, holder))
-            .set("contract", contract)
-            .set("holder", holder)
-            .set("balance", delta.new_value)
-            .set("block_number", clock.number);
-    }
+            .create_row("approval", [("evt_tx_hash", evt.evt_tx_hash),("evt_index", evt.evt_index.to_string())])
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("approved", Hex(&evt.approved).to_string())
+            .set("owner", Hex(&evt.owner).to_string())
+            .set("token_id", BigDecimal::from_str(&evt.token_id).unwrap());
+    });
+    events.approval_for_alls.into_iter().for_each(|evt| {
+        tables
+            .create_row("approval_for_all", [("evt_tx_hash", evt.evt_tx_hash),("evt_index", evt.evt_index.to_string())])
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("approved", evt.approved)
+            .set("operator", Hex(&evt.operator).to_string())
+            .set("owner", Hex(&evt.owner).to_string());
+    });
+    events.ownership_transferreds.into_iter().for_each(|evt| {
+        tables
+            .create_row("ownership_transferred", [("evt_tx_hash", evt.evt_tx_hash),("evt_index", evt.evt_index.to_string())])
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("new_owner", Hex(&evt.new_owner).to_string())
+            .set("previous_owner", Hex(&evt.previous_owner).to_string());
+    });
+    events.transfers.into_iter().for_each(|evt| {
+        tables
+            .create_row("transfer", [("evt_tx_hash", evt.evt_tx_hash),("evt_index", evt.evt_index.to_string())])
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("from", Hex(&evt.from).to_string())
+            .set("to", Hex(&evt.to).to_string())
+            .set("token_id", BigDecimal::from_str(&evt.token_id).unwrap());
+    });
 
     Ok(tables.to_database_changes())
 }
 
-fn generate_key(holder: &String) -> String {
-    return format!("total:{}:{}", holder, Hex(TRACKED_CONTRACT));
+#[substreams::handlers::map]
+fn graph_out(events: contract::Events) -> Result<EntityChanges, substreams::errors::Error> {
+    // Initialize changes container
+    let mut tables = EntityChangesTables::new();
+
+    // Loop over all the abis events to create changes
+    events.approvals.into_iter().for_each(|evt| {
+        tables
+            .create_row("approval", format!("{}-{}", evt.evt_tx_hash, evt.evt_index))
+            .set("evt_tx_hash", evt.evt_tx_hash)
+            .set("evt_index", evt.evt_index)
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("approved", Hex(&evt.approved).to_string())
+            .set("owner", Hex(&evt.owner).to_string())
+            .set("token_id", BigDecimal::from_str(&evt.token_id).unwrap());
+    });
+    events.approval_for_alls.into_iter().for_each(|evt| {
+        tables
+            .create_row("approval_for_all", format!("{}-{}", evt.evt_tx_hash, evt.evt_index))
+            .set("evt_tx_hash", evt.evt_tx_hash)
+            .set("evt_index", evt.evt_index)
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("approved", evt.approved)
+            .set("operator", Hex(&evt.operator).to_string())
+            .set("owner", Hex(&evt.owner).to_string());
+    });
+    events.ownership_transferreds.into_iter().for_each(|evt| {
+        tables
+            .create_row("ownership_transferred", format!("{}-{}", evt.evt_tx_hash, evt.evt_index))
+            .set("evt_tx_hash", evt.evt_tx_hash)
+            .set("evt_index", evt.evt_index)
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("new_owner", Hex(&evt.new_owner).to_string())
+            .set("previous_owner", Hex(&evt.previous_owner).to_string());
+    });
+    events.transfers.into_iter().for_each(|evt| {
+        tables
+            .create_row("transfer", format!("{}-{}", evt.evt_tx_hash, evt.evt_index))
+            .set("evt_tx_hash", evt.evt_tx_hash)
+            .set("evt_index", evt.evt_index)
+            .set("evt_block_time", evt.evt_block_time.unwrap())
+            .set("evt_block_number", evt.evt_block_number)
+            .set("from", Hex(&evt.from).to_string())
+            .set("to", Hex(&evt.to).to_string())
+            .set("token_id", BigDecimal::from_str(&evt.token_id).unwrap());
+    });
+
+    Ok(tables.to_entity_changes())
 }
